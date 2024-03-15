@@ -1,0 +1,197 @@
+1. Formulați în limbaj natural și implementați 5 cereri SQL complexe ce vor utiliza, în ansamblul lor, următoarele elemente:
+• operație join pe cel puțin 4 tabele
+• filtrare la nivel de linii
+• subcereri sincronizate în care intervin cel puțin 3 tabele
+• subcereri nesincronizate în care intervin cel puțin 3 tabele
+• grupări de date, funcții grup, filtrare la nivel de grupuri
+• ordonări
+• utilizarea a cel puțin 2 funcții pe șiruri de caractere, 2 funcții pe date calendaristice, a funcțiilor NVL și DECODE, a cel puțin unei expresii CASE
+• utilizarea a cel puțin 1 bloc de cerere (clauza WITH)
+
+
+--1.Sa se afiseze informatii (id- in ordine crescatoare, nume, prenume) despre pacientii operati la o specializare care incepe cu G si sa se precizeze daca acestia
+--inca se afla in spital (nu au fost externati la ultima internare) sau nu
+
+select p.pacient_id, p.nume, p.prenume ,case count(*) when count(e.externare_id) then 'NU' else 'DA' end "Inca in spital"
+from pacienti p 
+full join internari i on(p.pacient_id=i.pacient_id)
+full join externari e on(e.internare_id=i.internare_id)
+group by p.pacient_id, p.nume, p.prenume 
+having p.pacient_id in (  --subcerere nesincronizata
+                            select distinct o.pacient_id
+                            from operatii o  join doctori d using (doctor_id)
+                            where  upper(d.specializare) like ('G%')  
+                            
+                      )
+order by p.pacient_id;
+
+--2. Sa se afiseze data consultatiei, nume si prenume pacient, diagnosticul cat si experienta doctorului care a consultat pacientul si care face parte dintr-un departament cu cel putin 6 posturi in total                      
+
+select to_char(c.data_consultatie, 'dd-mm-yyyy') "Data consultatie", replace(c.afectiune, 'af', 'afectiune ') Afectiune,
+p.nume "Nume pacient", p.prenume "Prenume pacient", decode  (floor(months_between(sysdate, d.data_angajare)/12), 0, 'Sub un an',
+                                                                                                           1, 'Aprox. un an', 
+                                                                                                           2, 'Aprox 2 ani', 
+                                                                                                           3, 'Aprox 3 ani',
+                                                                                                           4, 'Aprox 4 ani',
+                                                                                                           'Mai mult de 3 ani') "Experienta doctor"
+
+from pacienti p join consultatii c on (c.pacient_id=p.pacient_id)
+                join doctori d on (c.doctor_id=d.doctor_id)
+                join departamente dep on (d.specializare=dep.denumire)
+                where dep.posturi_total>=6;
+
+
+
+--3. Sa se afiseze informatii (id, adresa, numarul de ani experienta) despre doctorii care nu au mai avut un job anterior si sunt angajati inaintea tuturor persoanelor din personal
+
+select d.doctor_id, nvl(d.adresa, 'Adresa indisponibila') Adresa, ceil((sysdate-d.data_angajare)/365) "Ani experienta"
+from doctori d 
+where not exists (select 'x' from istoric_doctori ist where ist.doctor_id=d.doctor_id)
+                  and not exists (select 'x' from personal pers where d.data_angajare>pers.data_angajare)
+order by d.doctor_id;
+
+
+--4. Sa se afiseze informatii (denumire, salariul maxim si ultima data de angajare) pentru fiecare departament medical 
+--care a angajat ultimul doctor acum cel putin 3 ani 
+
+with tab_data_ang_maxima as ( select dep.denumire, max(d.salariu) sal_max , to_char(max(d.data_angajare), 'dd-mm-yyyy') data_ang_max
+                          from doctori d join departamente dep on (dep.denumire=d.specializare) 
+                          group by dep.denumire)
+select *
+from tab_data_ang_maxima 
+where add_months(data_ang_max,36)<sysdate;
+
+
+--5. sa se calculeze cati pacienti care au adresa specificata sunt din Craiova, si cati sunt din Iasi 
+
+select sum(Craiova) "Pacienti din Craiova", sum(Iasi) "Pacienti din Iasi"
+from 
+(select p.pacient_id, case instr(lower(p.adresa), 'craiova')  when 0 then 0 else 1 end Craiova, 
+                      case instr(lower(p.adresa), 'iasi')  when 0 then 0 else 1 end Iasi
+from pacienti p where p.adresa is not null);
+
+
+2. Implementarea a 3 operații de actualizare sau suprimare a datelor utilizând subcereri.
+
+--Sa se scada salariul cu 300 doctorilor care se afla intr-un departament cu numar maxim de zile de concediu
+update doctori
+set salariu=salariu-300
+where specializare in (select denumire from departamente where zile_concediu=(select max(zile_concediu) from departamente));
+
+--Sa se adauge pentru fiecare camera  mesajul "Contine insuficiente aparate medicale" in observatii_camera daca ea contine mai putin de 2 aparate medicale 
+update camere c 
+set observatii_camera= concat(observatii_camera, ' Contine insuficiente aparate medicale.')
+where (select count(*) from aparate_medicale am where am.camera_id= c. camera_id)<2; 
+
+--Sa se stearga doctorii care sustin consultatii si nu au avut nicio programare
+delete from doctori
+where doctor_id not in (select doctor_id from programari) and upper(tip_doctor)='CONSULTATII';
+
+commit;
+
+
+3. Crearea unei vizualizări compuse. Dați un exemplu de operație LMD permisă pe vizualizarea respectivă și un exemplu de operație LMD nepermisă
+
+--vizualizare care contine date(id, id-ul camerei, denumire aparat, telefon service, etaj) despre aparatele medicale care se afla la etajul 1 sau 2
+
+create or replace view viz_aparate_etaj
+as
+select ap.aparat_id, ap.camera_id, ap.denumire, ap.nr_service telefon_service, cam.etaj
+from aparate_medicale ap join camere cam on (ap.camera_id=cam.camera_id)
+where cam.etaj=1 or cam.etaj=2;
+
+commit;
+
+--aparate_medicale e key preserved table
+--operatii LMD folosite: update si delete
+
+--enunt: Sa se actualizeze etajul camerei in care se afla aparatul cu id-ul 4 in etajul 2
+update viz_aparate_etaj set etaj=2 where aparat_id=4; -- nepermisa pentru ca apare etajul care nu face parte din 'key preserved table', deci nu e updatable
+         
+--enunt: Sa se stearga prin intermediul vizualizarii linia aparatului cu id-ul 10             
+delete from viz_aparate_etaj where aparat_id=10; --permisa, are ca efect stergerea unei linii din tabelul 'aparate_medicale'
+
+commit;
+
+
+4. Crearea unui index care să optimizeze o cerere de tip căutare cu 2 criterii. Specificați cererea.
+
+create index idx_data_ang_doct on doctori(data_angajare);
+commit;
+
+--Sa se afiseze id-ul, numele, prenumele si  data angajarii pentru doctorii care ofera consultatii si sunt angajati inainte de 1 octombrie 2016
+
+select doctor_id, nume, prenume, data_angajare
+from doctori
+where data_angajare<to_date('01-10-2016', 'dd-mm-yyyy') and tip_doctor='consultatii';
+
+
+5. Formulați în limbaj natural și implementați în SQL: o cerere ce utilizează operația outer-join pe minimum 4 tabele și două cereri ce utilizează operația division.
+
+--Sa se afiseze  pentru fiecare departament DA daca suporta toate cheltuielile retetelor si operatiilor (adica pretul total este 0) sau NU in caz contrar; 
+ 
+ select d.specializare, case nvl(sum(r.pret_reteta),0)+ nvl(sum(op.cost),0) 
+                            when 0 then 'DA'
+                                   else 'NU'
+                                   end "Suporta toate cheltuielile"                                  
+from doctori d  full outer join operatii op on (d.doctor_id=op.doctor_id)
+                full outer  join consultatii c on (c.doctor_id=d.doctor_id)
+                full outer join retete r on (r.reteta_id=c.reteta_id)
+                group by d.specializare;  --eventual pot adauga un having 
+                
+--Division 1:
+
+--Sa se afiseze numele, prenumele si specializarea doctorilor care au consultat cel putin aceiasi pacienti ca doctorul cu id-ul 106
+--ordonati alfabetic dupa nume (nu se va afisa si doctorul cu id-ul 106)
+
+select d.nume, d.prenume, d.specializare
+from doctori d
+where not exists
+( select c1. pacient_id 
+  from consultatii  c1
+  where c1.doctor_id=106
+  MINUS
+  select c2.pacient_id
+  from consultatii c2
+  where c2.doctor_id=d.doctor_id
+)
+and  d.doctor_id!=106
+order by d.nume;
+
+--Division 2:
+
+--Sa se afiseze id-ul camerelor in ordine crescatoare care au aceleasi aparate medicale (denumire) ca si camera in care a avut loc cea mai recenta internare.
+--Se va include si acea camera.
+
+select cam.camera_id
+from camere cam 
+where not exists
+(
+   select ap.denumire
+   from aparate_medicale ap
+   where ap.camera_id=cam.camera_id
+   MINUS
+   select ap2.denumire 
+   from aparate_medicale ap2
+   where ap2.camera_id=(select camera_id
+                        from internari 
+                        where data=(select min(data) 
+                                    from internari))
+)
+and not exists
+(
+    select ap2.denumire 
+   from aparate_medicale ap2
+   where ap2.camera_id=(select camera_id
+                        from internari 
+                        where data=(select min(data) 
+                                    from internari))
+    MINUS
+    select ap.denumire
+    from aparate_medicale ap
+    where ap.camera_id=cam.camera_id
+
+)
+order by cam.camera_id;
+
+
